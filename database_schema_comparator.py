@@ -12,9 +12,20 @@ import sys
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, asdict
 from datetime import datetime
-import mysql.connector
-import psycopg2
 import sqlite3
+
+# 可选导入数据库驱动
+try:
+    import mysql.connector
+    MYSQL_AVAILABLE = True
+except ImportError:
+    MYSQL_AVAILABLE = False
+
+try:
+    import psycopg2
+    POSTGRESQL_AVAILABLE = True
+except ImportError:
+    POSTGRESQL_AVAILABLE = False
 
 
 @dataclass
@@ -70,6 +81,10 @@ class DatabaseConnector:
         result = cursor.fetchall()
         cursor.close()
         return result
+        
+    def get_all_tables(self) -> List[str]:
+        """获取数据库中的所有表名"""
+        raise NotImplementedError
 
 
 class MySQLConnector(DatabaseConnector):
@@ -89,6 +104,20 @@ class MySQLConnector(DatabaseConnector):
         except Exception as e:
             logging.error(f"连接MySQL数据库失败: {e}")
             raise
+            
+    def get_all_tables(self) -> List[str]:
+        """获取MySQL数据库中的所有表名"""
+        query = """
+        SELECT TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+        ORDER BY TABLE_NAME
+        """
+        cursor = self.connection.cursor()
+        cursor.execute(query, (self.config['database'],))
+        tables = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return tables
             
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取MySQL表结构信息"""
@@ -227,6 +256,20 @@ class PostgreSQLConnector(DatabaseConnector):
         except Exception as e:
             logging.error(f"连接PostgreSQL数据库失败: {e}")
             raise
+            
+    def get_all_tables(self) -> List[str]:
+        """获取PostgreSQL数据库中的所有表名"""
+        query = """
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+        """
+        cursor = self.connection.cursor()
+        cursor.execute(query)
+        tables = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return tables
             
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取PostgreSQL表结构信息"""
@@ -382,6 +425,18 @@ class SQLiteConnector(DatabaseConnector):
             logging.error(f"连接SQLite数据库失败: {e}")
             raise
             
+    def get_all_tables(self) -> List[str]:
+        """获取SQLite数据库中的所有表名"""
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """)
+        tables = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return tables
+            
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取SQLite表结构信息"""
         cursor = self.connection.cursor()
@@ -482,8 +537,12 @@ class DatabaseSchemaComparator:
         db_type = db_config['type'].lower()
         
         if db_type == 'mysql':
+            if not MYSQL_AVAILABLE:
+                raise ImportError("MySQL连接器未安装，请运行: pip install mysql-connector-python")
             return MySQLConnector(db_config)
         elif db_type == 'postgresql':
+            if not POSTGRESQL_AVAILABLE:
+                raise ImportError("PostgreSQL连接器未安装，请运行: pip install psycopg2-binary")
             return PostgreSQLConnector(db_config)
         elif db_type == 'sqlite':
             return SQLiteConnector(db_config)
@@ -637,9 +696,16 @@ class DatabaseSchemaComparator:
         template_connector.connect()
         
         try:
+            # 检查是否使用通配符对比所有表
+            tables_to_compare = self.tables_to_compare
+            if tables_to_compare == "*" or (isinstance(tables_to_compare, list) and len(tables_to_compare) == 1 and tables_to_compare[0] == "*"):
+                tables_to_compare = template_connector.get_all_tables()
+                logging.info(f"检测到通配符，将对比所有表，共 {len(tables_to_compare)} 个表")
+                logging.info(f"表列表: {', '.join(tables_to_compare)}")
+            
             # 获取模板表结构
             template_tables = {}
-            for table_name in self.tables_to_compare:
+            for table_name in tables_to_compare:
                 try:
                     template_tables[table_name] = template_connector.get_table_info(table_name)
                     logging.info(f"已获取模板表结构: {table_name}")
@@ -656,7 +722,7 @@ class DatabaseSchemaComparator:
                 target_connector.connect()
                 
                 try:
-                    for table_name in self.tables_to_compare:
+                    for table_name in tables_to_compare:
                         if table_name not in template_tables:
                             continue
                             

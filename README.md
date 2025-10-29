@@ -93,7 +93,9 @@ cp config_template.json my_config.json
 
 - **template_database**: 作为标准的模板数据库配置
 - **target_databases**: 需要与模板比较的目标数据库列表
-- **tables_to_compare**: 需要比较的表名列表
+- **tables_to_compare**: 需要比较的表名列表，支持以下格式：
+  - 指定表名列表：`["users", "products", "orders"]`
+  - 使用通配符对比所有表：`"*"` 或 `["*"]`
 
 ## 使用方法
 
@@ -224,6 +226,49 @@ ls output/
   ]
 }
 ```
+
+### 示例3：对比所有表
+
+使用通配符对比模板数据库中的所有表：
+
+```json
+{
+  "template_database": {
+    "name": "template_db",
+    "type": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "user": "username",
+    "password": "password",
+    "database": "template_database_name"
+  },
+  "target_databases": {
+    "production_db": {
+      "name": "production_db",
+      "type": "mysql",
+      "host": "prod-server.example.com",
+      "port": 3306,
+      "user": "prod_user",
+      "password": "prod_password",
+      "database": "production_database_name"
+    }
+  },
+  "tables_to_compare": "*"
+}
+```
+
+或者使用数组形式：
+
+```json
+{
+  "tables_to_compare": ["*"]
+}
+```
+
+使用通配符时，工具会自动获取模板数据库中的所有表名，并与目标数据库进行对比。这在以下场景特别有用：
+- 数据库有大量表需要对比
+- 不确定具体有哪些表需要对比
+- 想要确保所有表结构都保持一致
 
 ## 安全注意事项
 
