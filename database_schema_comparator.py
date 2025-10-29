@@ -63,6 +63,10 @@ class DatabaseConnector:
         """获取表结构信息"""
         raise NotImplementedError
         
+    def get_all_table_names(self) -> List[str]:
+        """获取数据库中所有表名"""
+        raise NotImplementedError
+        
     def execute_query(self, query: str) -> List[Tuple]:
         """执行查询"""
         cursor = self.connection.cursor()
@@ -89,6 +93,20 @@ class MySQLConnector(DatabaseConnector):
         except Exception as e:
             logging.error(f"连接MySQL数据库失败: {e}")
             raise
+    
+    def get_all_table_names(self) -> List[str]:
+        """获取MySQL数据库中所有表名"""
+        query = """
+        SELECT TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+        ORDER BY TABLE_NAME
+        """
+        cursor = self.connection.cursor()
+        cursor.execute(query, (self.config['database'],))
+        table_names = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return table_names
             
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取MySQL表结构信息"""
@@ -227,6 +245,20 @@ class PostgreSQLConnector(DatabaseConnector):
         except Exception as e:
             logging.error(f"连接PostgreSQL数据库失败: {e}")
             raise
+    
+    def get_all_table_names(self) -> List[str]:
+        """获取PostgreSQL数据库中所有表名"""
+        query = """
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+        """
+        cursor = self.connection.cursor()
+        cursor.execute(query)
+        table_names = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return table_names
             
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取PostgreSQL表结构信息"""
@@ -381,6 +413,18 @@ class SQLiteConnector(DatabaseConnector):
         except Exception as e:
             logging.error(f"连接SQLite数据库失败: {e}")
             raise
+    
+    def get_all_table_names(self) -> List[str]:
+        """获取SQLite数据库中所有表名"""
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """)
+        table_names = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return table_names
             
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取SQLite表结构信息"""
@@ -637,9 +681,19 @@ class DatabaseSchemaComparator:
         template_connector.connect()
         
         try:
+            # 确定要比较的表列表
+            if self.tables_to_compare == ["*"] or (isinstance(self.tables_to_compare, str) and self.tables_to_compare == "*"):
+                # 如果指定为*，获取模板数据库中的所有表
+                tables_to_process = template_connector.get_all_table_names()
+                logging.info(f"使用通配符*，将比较模板数据库中的所有表: {tables_to_process}")
+            else:
+                # 使用指定的表列表
+                tables_to_process = self.tables_to_compare
+                logging.info(f"将比较指定的表: {tables_to_process}")
+            
             # 获取模板表结构
             template_tables = {}
-            for table_name in self.tables_to_compare:
+            for table_name in tables_to_process:
                 try:
                     template_tables[table_name] = template_connector.get_table_info(table_name)
                     logging.info(f"已获取模板表结构: {table_name}")
@@ -656,7 +710,7 @@ class DatabaseSchemaComparator:
                 target_connector.connect()
                 
                 try:
-                    for table_name in self.tables_to_compare:
+                    for table_name in tables_to_process:
                         if table_name not in template_tables:
                             continue
                             

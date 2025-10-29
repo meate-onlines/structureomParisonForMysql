@@ -1,0 +1,100 @@
+{
+  "target": {
+    "orders": {
+      "has_differences": false,
+      "alter_statements": [],
+      "differences": {
+        "missing_columns": [],
+        "extra_columns": [],
+        "modified_columns": []
+      }
+    },
+    "products": {
+      "has_differences": true,
+      "alter_statements": [
+        "-- SQLite不支持直接修改或删除列，需要重建表 products",
+        "-- 请手动执行以下步骤：",
+        "-- 1. 创建新表结构",
+        "-- 2. 复制数据到新表",
+        "-- 3. 删除旧表",
+        "-- 4. 重命名新表"
+      ],
+      "differences": {
+        "missing_columns": [],
+        "extra_columns": [],
+        "modified_columns": [
+          {
+            "name": "price",
+            "template": {
+              "name": "price",
+              "data_type": "DECIMAL(10,2)",
+              "is_nullable": false,
+              "default_value": null,
+              "character_maximum_length": null,
+              "numeric_precision": null,
+              "numeric_scale": null,
+              "column_key": "",
+              "extra": "",
+              "comment": ""
+            },
+            "target": {
+              "name": "price",
+              "data_type": "REAL",
+              "is_nullable": false,
+              "default_value": null,
+              "character_maximum_length": null,
+              "numeric_precision": null,
+              "numeric_scale": null,
+              "column_key": "",
+              "extra": "",
+              "comment": ""
+            }
+          }
+        ]
+      }
+    },
+    "users": {
+      "has_differences": true,
+      "alter_statements": [
+        "ALTER TABLE \"users\" ADD COLUMN \"updated_at\" TIMESTAMP DEFAULT 'CURRENT_TIMESTAMP';",
+        "-- SQLite不支持直接修改或删除列，需要重建表 users",
+        "-- 请手动执行以下步骤：",
+        "-- 1. 创建新表结构",
+        "-- 2. 复制数据到新表",
+        "-- 3. 删除旧表",
+        "-- 4. 重命名新表"
+      ],
+      "differences": {
+        "missing_columns": [
+          {
+            "name": "updated_at",
+            "data_type": "TIMESTAMP",
+            "is_nullable": true,
+            "default_value": "CURRENT_TIMESTAMP",
+            "character_maximum_length": null,
+            "numeric_precision": null,
+            "numeric_scale": null,
+            "column_key": "",
+            "extra": "",
+            "comment": ""
+          }
+        ],
+        "extra_columns": [
+          {
+            "name": "phone",
+            "data_type": "VARCHAR(20)",
+            "is_nullable": true,
+            "default_value": null,
+            "character_maximum_length": null,
+            "numeric_precision": null,
+            "numeric_scale": null,
+            "column_key": "",
+            "extra": "",
+            "comment": ""
+          }
+        ],
+        "modified_columns": []
+      }
+    }
+  }
+}

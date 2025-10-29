@@ -1,0 +1,15 @@
+{
+  "template_database": {
+    "name": "template",
+    "type": "sqlite",
+    "database": "./template.db"
+  },
+  "target_databases": {
+    "target": {
+      "name": "target",
+      "type": "sqlite",
+      "database": "./target.db"
+    }
+  },
+  "tables_to_compare": "*"
+}

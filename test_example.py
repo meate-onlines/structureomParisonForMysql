@@ -111,6 +111,7 @@ def create_target_database():
 
 def create_test_config():
     """创建测试配置文件"""
+    # 创建指定表的配置
     config = {
         "template_database": {
             "name": "template",
@@ -135,6 +136,28 @@ def create_test_config():
         json.dump(config, f, ensure_ascii=False, indent=2)
     
     print("测试配置文件 test_config.json 创建完成")
+    
+    # 创建所有表的配置
+    config_all = {
+        "template_database": {
+            "name": "template",
+            "type": "sqlite",
+            "database": "./template.db"
+        },
+        "target_databases": {
+            "target": {
+                "name": "target",
+                "type": "sqlite",
+                "database": "./target.db"
+            }
+        },
+        "tables_to_compare": "*"
+    }
+    
+    with open('test_config_all_tables.json', 'w', encoding='utf-8') as f:
+        json.dump(config_all, f, ensure_ascii=False, indent=2)
+    
+    print("所有表测试配置文件 test_config_all_tables.json 创建完成")
 
 def main():
     """主函数"""
@@ -146,11 +169,15 @@ def main():
     
     print("\n测试环境准备完成！")
     print("\n运行测试命令：")
-    print("python database_schema_comparator.py test_config.json")
+    print("1. 比较指定表：")
+    print("   python database_schema_comparator.py test_config.json")
+    print("\n2. 比较所有表（使用*通配符）：")
+    print("   python database_schema_comparator.py test_config_all_tables.json")
     print("\n预期结果：")
     print("- users表：缺少updated_at列，多了phone列")
     print("- products表：price列类型不同")
     print("- orders表：结构一致")
+    print("\n使用*通配符时，会自动比较模板数据库中的所有表")
 
 if __name__ == "__main__":
     main()

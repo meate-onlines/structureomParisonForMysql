@@ -93,9 +93,28 @@ cp config_template.json my_config.json
 
 - **template_database**: 作为标准的模板数据库配置
 - **target_databases**: 需要与模板比较的目标数据库列表
-- **tables_to_compare**: 需要比较的表名列表
+- **tables_to_compare**: 需要比较的表名列表，支持以下格式：
+  - 具体表名列表：`["users", "products", "orders"]`
+  - 通配符：`"*"` 表示比较模板数据库中的所有表
 
 ## 使用方法
+
+### 通配符支持
+
+工具支持使用 `*` 通配符来比较模板数据库中的所有表：
+
+```json
+{
+  "tables_to_compare": "*"
+}
+```
+
+当使用 `*` 时，工具会：
+1. 自动获取模板数据库中的所有表名
+2. 对每个表进行结构比较
+3. 生成相应的修改语句
+
+这对于需要同步整个数据库结构的场景非常有用。
 
 ### 基本用法
 
@@ -212,7 +231,24 @@ ls output/
 # alter_statements_staging_20231201_143022.sql
 ```
 
-### 示例2：只比较特定表
+### 示例2：比较所有表（使用通配符）
+
+修改配置文件中的`tables_to_compare`：
+
+```json
+{
+  "tables_to_compare": "*"
+}
+```
+
+运行比较：
+```bash
+python database_schema_comparator.py ecommerce_config.json
+```
+
+工具会自动发现并比较模板数据库中的所有表。
+
+### 示例3：只比较特定表
 
 修改配置文件中的`tables_to_compare`：
 
