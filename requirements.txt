@@ -1,0 +1,12 @@
+# 数据库表结构比较工具依赖包
+
+# MySQL数据库连接器
+mysql-connector-python==8.2.0
+
+# PostgreSQL数据库连接器
+psycopg2-binary==2.9.9
+
+# SQLite是Python内置模块，无需额外安装
+
+# 其他可能用到的包
+typing-extensions==4.8.0
