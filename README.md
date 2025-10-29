@@ -454,8 +454,8 @@ MIT License
 
 如有问题或建议，请通过以下方式联系：
 
-- 提交Issue: [项目地址]
-- 邮箱: [联系邮箱]
+- 提交Issue: [https://github.com/meate-onlines/structureomParisonForMysql]
+- 邮箱: [984532468@qq.com]
 
 ---
 
