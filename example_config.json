@@ -41,5 +41,6 @@
     "order_items",
     "payments",
     "shipping_addresses"
-  ]
+  ],
+  "_comment_tables": "如果要对比所有表，将 tables_to_compare 设置为 '*' 或 ['*']"
 }
