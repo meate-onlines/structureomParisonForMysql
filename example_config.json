@@ -1,0 +1,45 @@
+{
+  "template_database": {
+    "name": "template_db",
+    "type": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "user": "root",
+    "password": "password123",
+    "database": "ecommerce_template"
+  },
+  "target_databases": {
+    "production": {
+      "name": "production",
+      "type": "mysql",
+      "host": "prod-mysql.company.com",
+      "port": 3306,
+      "user": "prod_user",
+      "password": "prod_secure_password",
+      "database": "ecommerce_prod"
+    },
+    "staging": {
+      "name": "staging",
+      "type": "postgresql",
+      "host": "staging-pg.company.com",
+      "port": 5432,
+      "user": "staging_user",
+      "password": "staging_password",
+      "database": "ecommerce_staging"
+    },
+    "development": {
+      "name": "development",
+      "type": "sqlite",
+      "database": "./dev_database.db"
+    }
+  },
+  "tables_to_compare": [
+    "users",
+    "products",
+    "categories",
+    "orders",
+    "order_items",
+    "payments",
+    "shipping_addresses"
+  ]
+}

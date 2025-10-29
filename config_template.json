@@ -1,0 +1,42 @@
+{
+  "template_database": {
+    "name": "template_db",
+    "type": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "user": "username",
+    "password": "password",
+    "database": "template_database_name"
+  },
+  "target_databases": {
+    "production_db": {
+      "name": "production_db",
+      "type": "mysql",
+      "host": "prod-server.example.com",
+      "port": 3306,
+      "user": "prod_user",
+      "password": "prod_password",
+      "database": "production_database_name"
+    },
+    "staging_db": {
+      "name": "staging_db",
+      "type": "postgresql",
+      "host": "staging-server.example.com",
+      "port": 5432,
+      "user": "staging_user",
+      "password": "staging_password",
+      "database": "staging_database_name"
+    },
+    "test_db": {
+      "name": "test_db",
+      "type": "sqlite",
+      "database": "/path/to/test.db"
+    }
+  },
+  "tables_to_compare": [
+    "users",
+    "products",
+    "orders",
+    "order_items"
+  ]
+}
