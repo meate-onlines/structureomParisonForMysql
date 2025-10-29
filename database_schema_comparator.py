@@ -30,6 +30,7 @@ class ColumnInfo:
     column_key: str = ""
     extra: str = ""
     comment: str = ""
+    ordinal_position: int = 0
 
 
 @dataclass
@@ -70,6 +71,10 @@ class DatabaseConnector:
         result = cursor.fetchall()
         cursor.close()
         return result
+        
+    def get_all_tables(self) -> List[str]:
+        """获取数据库中的所有表名"""
+        raise NotImplementedError
 
 
 class MySQLConnector(DatabaseConnector):
@@ -90,6 +95,20 @@ class MySQLConnector(DatabaseConnector):
             logging.error(f"连接MySQL数据库失败: {e}")
             raise
             
+    def get_all_tables(self) -> List[str]:
+        """获取MySQL数据库中的所有表名"""
+        query = """
+        SELECT TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = 'BASE TABLE'
+        ORDER BY TABLE_NAME
+        """
+        cursor = self.connection.cursor()
+        cursor.execute(query, (self.config['database'],))
+        tables = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return tables
+            
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取MySQL表结构信息"""
         # 获取列信息
@@ -104,7 +123,8 @@ class MySQLConnector(DatabaseConnector):
             NUMERIC_SCALE,
             COLUMN_KEY,
             EXTRA,
-            COLUMN_COMMENT
+            COLUMN_COMMENT,
+            ORDINAL_POSITION
         FROM INFORMATION_SCHEMA.COLUMNS 
         WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
         ORDER BY ORDINAL_POSITION
@@ -126,7 +146,8 @@ class MySQLConnector(DatabaseConnector):
                 numeric_scale=row[6],
                 column_key=row[7] or "",
                 extra=row[8] or "",
-                comment=row[9] or ""
+                comment=row[9] or "",
+                ordinal_position=row[10]
             ))
         
         # 获取主键信息
@@ -228,6 +249,20 @@ class PostgreSQLConnector(DatabaseConnector):
             logging.error(f"连接PostgreSQL数据库失败: {e}")
             raise
             
+    def get_all_tables(self) -> List[str]:
+        """获取PostgreSQL数据库中的所有表名"""
+        query = """
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+        """
+        cursor = self.connection.cursor()
+        cursor.execute(query)
+        tables = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return tables
+            
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取PostgreSQL表结构信息"""
         # 获取列信息
@@ -242,7 +277,8 @@ class PostgreSQLConnector(DatabaseConnector):
             c.numeric_scale,
             CASE WHEN pk.column_name IS NOT NULL THEN 'PRI' ELSE '' END as column_key,
             CASE WHEN c.column_default LIKE 'nextval%' THEN 'auto_increment' ELSE '' END as extra,
-            COALESCE(pgd.description, '') as comment
+            COALESCE(pgd.description, '') as comment,
+            c.ordinal_position
         FROM information_schema.columns c
         LEFT JOIN (
             SELECT ku.column_name
@@ -275,7 +311,8 @@ class PostgreSQLConnector(DatabaseConnector):
                 numeric_scale=row[6],
                 column_key=row[7] or "",
                 extra=row[8] or "",
-                comment=row[9] or ""
+                comment=row[9] or "",
+                ordinal_position=row[10]
             ))
         
         # 获取主键信息
@@ -382,6 +419,18 @@ class SQLiteConnector(DatabaseConnector):
             logging.error(f"连接SQLite数据库失败: {e}")
             raise
             
+    def get_all_tables(self) -> List[str]:
+        """获取SQLite数据库中的所有表名"""
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """)
+        tables = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return tables
+            
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取SQLite表结构信息"""
         cursor = self.connection.cursor()
@@ -406,7 +455,8 @@ class SQLiteConnector(DatabaseConnector):
                 numeric_scale=None,
                 column_key='PRI' if pk else '',
                 extra='',
-                comment=''
+                comment='',
+                ordinal_position=cid
             ))
             
             if pk:
@@ -501,10 +551,15 @@ class DatabaseSchemaComparator:
             'modified_columns': []
         }
         
-        # 检查缺失的列
+        # 检查缺失的列，按位置排序
+        missing_cols = []
         for col_name in template_col_dict:
             if col_name not in target_col_dict:
-                differences['missing_columns'].append(template_col_dict[col_name])
+                missing_cols.append(template_col_dict[col_name])
+        
+        # 按ordinal_position排序
+        missing_cols.sort(key=lambda x: x.ordinal_position)
+        differences['missing_columns'] = missing_cols
         
         # 检查多余的列
         for col_name in target_col_dict:
@@ -530,18 +585,30 @@ class DatabaseSchemaComparator:
         
         return differences
     
-    def generate_mysql_alter_statements(self, table_name: str, differences: Dict[str, Any]) -> List[str]:
+    def generate_mysql_alter_statements(self, table_name: str, differences: Dict[str, Any], template_columns: List[ColumnInfo], target_columns: List[ColumnInfo]) -> List[str]:
         """生成MySQL ALTER语句"""
         statements = []
         
-        # 添加缺失的列
+        # 创建目标表列名集合，用于快速查找
+        target_col_names = {col.name for col in target_columns}
+        
+        # 添加缺失的列，按位置顺序
         for col in differences['missing_columns']:
             null_clause = "NOT NULL" if not col.is_nullable else "NULL"
             default_clause = f"DEFAULT '{col.default_value}'" if col.default_value else ""
             length_clause = f"({col.character_maximum_length})" if col.character_maximum_length else ""
             comment_clause = f"COMMENT '{col.comment}'" if col.comment else ""
             
-            stmt = f"ALTER TABLE `{table_name}` ADD COLUMN `{col.name}` {col.data_type}{length_clause} {null_clause} {default_clause} {comment_clause};"
+            # 找到应该插入的位置（在哪个字段之后）
+            after_clause = ""
+            current_pos = col.ordinal_position
+            
+            # 查找在当前字段之前且目标表中存在的字段
+            for template_col in template_columns:
+                if template_col.ordinal_position < current_pos and template_col.name in target_col_names:
+                    after_clause = f"AFTER `{template_col.name}`"
+            
+            stmt = f"ALTER TABLE `{table_name}` ADD COLUMN `{col.name}` {col.data_type}{length_clause} {null_clause} {default_clause} {comment_clause} {after_clause};"
             statements.append(stmt.strip())
         
         # 修改列
@@ -562,11 +629,14 @@ class DatabaseSchemaComparator:
         
         return statements
     
-    def generate_postgresql_alter_statements(self, table_name: str, differences: Dict[str, Any]) -> List[str]:
+    def generate_postgresql_alter_statements(self, table_name: str, differences: Dict[str, Any], template_columns: List[ColumnInfo], target_columns: List[ColumnInfo]) -> List[str]:
         """生成PostgreSQL ALTER语句"""
         statements = []
         
-        # 添加缺失的列
+        # 创建目标表列名集合，用于快速查找
+        target_col_names = {col.name for col in target_columns}
+        
+        # 添加缺失的列，按位置顺序
         for col in differences['missing_columns']:
             null_clause = "NOT NULL" if not col.is_nullable else ""
             default_clause = f"DEFAULT '{col.default_value}'" if col.default_value else ""
@@ -607,7 +677,7 @@ class DatabaseSchemaComparator:
         
         return statements
     
-    def generate_sqlite_alter_statements(self, table_name: str, differences: Dict[str, Any]) -> List[str]:
+    def generate_sqlite_alter_statements(self, table_name: str, differences: Dict[str, Any], template_columns: List[ColumnInfo], target_columns: List[ColumnInfo]) -> List[str]:
         """生成SQLite ALTER语句"""
         statements = []
         
@@ -628,6 +698,196 @@ class DatabaseSchemaComparator:
         
         return statements
     
+    def generate_mysql_create_table(self, table_name: str, template_table: TableInfo) -> List[str]:
+        """生成MySQL CREATE TABLE语句"""
+        statements = []
+        
+        # 开始CREATE TABLE语句
+        create_sql = f"CREATE TABLE `{table_name}` (\n"
+        
+        # 添加列定义
+        column_definitions = []
+        for col in template_table.columns:
+            col_def = f"  `{col.name}` {col.data_type}"
+            
+            # 添加长度限制
+            if col.character_maximum_length:
+                col_def += f"({col.character_maximum_length})"
+            elif col.numeric_precision and col.numeric_scale:
+                col_def += f"({col.numeric_precision},{col.numeric_scale})"
+            elif col.numeric_precision:
+                col_def += f"({col.numeric_precision})"
+            
+            # 添加NULL约束
+            if not col.is_nullable:
+                col_def += " NOT NULL"
+            
+            # 添加默认值
+            if col.default_value:
+                col_def += f" DEFAULT '{col.default_value}'"
+            
+            # 添加AUTO_INCREMENT
+            if col.extra and 'auto_increment' in col.extra.lower():
+                col_def += " AUTO_INCREMENT"
+            
+            # 添加注释
+            if col.comment:
+                col_def += f" COMMENT '{col.comment}'"
+            
+            column_definitions.append(col_def)
+        
+        create_sql += ",\n".join(column_definitions)
+        
+        # 添加主键
+        if template_table.primary_keys:
+            pk_columns = ", ".join([f"`{pk}`" for pk in template_table.primary_keys])
+            create_sql += f",\n  PRIMARY KEY ({pk_columns})"
+        
+        # 添加索引
+        for index in template_table.indexes:
+            if index['name'] != 'PRIMARY':  # 跳过主键
+                index_type = "UNIQUE" if index['unique'] else "INDEX"
+                index_columns = ", ".join([f"`{col}`" for col in index['columns']])
+                create_sql += f",\n  {index_type} `{index['name']}` ({index_columns})"
+        
+        # 添加外键
+        for fk in template_table.foreign_keys:
+            create_sql += f",\n  CONSTRAINT `{fk['name']}` FOREIGN KEY (`{fk['column']}`) REFERENCES `{fk['referenced_table']}` (`{fk['referenced_column']}`)"
+        
+        create_sql += "\n)"
+        
+        # 添加表注释
+        if template_table.comment:
+            create_sql += f" COMMENT='{template_table.comment}'"
+        
+        # 添加存储引擎和字符集
+        create_sql += " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;"
+        
+        statements.append(create_sql)
+        return statements
+    
+    def generate_postgresql_create_table(self, table_name: str, template_table: TableInfo) -> List[str]:
+        """生成PostgreSQL CREATE TABLE语句"""
+        statements = []
+        
+        # 开始CREATE TABLE语句
+        create_sql = f'CREATE TABLE "{table_name}" (\n'
+        
+        # 添加列定义
+        column_definitions = []
+        for col in template_table.columns:
+            col_def = f'  "{col.name}" {col.data_type}'
+            
+            # 添加长度限制
+            if col.character_maximum_length:
+                col_def += f"({col.character_maximum_length})"
+            elif col.numeric_precision and col.numeric_scale:
+                col_def += f"({col.numeric_precision},{col.numeric_scale})"
+            elif col.numeric_precision:
+                col_def += f"({col.numeric_precision})"
+            
+            # 添加NULL约束
+            if not col.is_nullable:
+                col_def += " NOT NULL"
+            
+            # 添加默认值
+            if col.default_value:
+                col_def += f" DEFAULT '{col.default_value}'"
+            
+            column_definitions.append(col_def)
+        
+        create_sql += ",\n".join(column_definitions)
+        create_sql += "\n);"
+        
+        statements.append(create_sql)
+        
+        # 添加主键
+        if template_table.primary_keys:
+            pk_columns = ", ".join([f'"{pk}"' for pk in template_table.primary_keys])
+            pk_sql = f'ALTER TABLE "{table_name}" ADD CONSTRAINT "{table_name}_pkey" PRIMARY KEY ({pk_columns});'
+            statements.append(pk_sql)
+        
+        # 添加索引
+        for index in template_table.indexes:
+            if index['name'] != 'PRIMARY':
+                index_type = "UNIQUE" if index['unique'] else "INDEX"
+                index_columns = ", ".join([f'"{col}"' for col in index['columns']])
+                index_sql = f'CREATE {index_type} "{index["name"]}" ON "{table_name}" ({index_columns});'
+                statements.append(index_sql)
+        
+        # 添加外键
+        for fk in template_table.foreign_keys:
+            fk_sql = f'ALTER TABLE "{table_name}" ADD CONSTRAINT "{fk["name"]}" FOREIGN KEY ("{fk["column"]}") REFERENCES "{fk["referenced_table"]}" ("{fk["referenced_column"]}");'
+            statements.append(fk_sql)
+        
+        # 添加表注释
+        if template_table.comment:
+            comment_sql = f'COMMENT ON TABLE "{table_name}" IS \'{template_table.comment}\';'
+            statements.append(comment_sql)
+        
+        # 添加列注释
+        for col in template_table.columns:
+            if col.comment:
+                comment_sql = f'COMMENT ON COLUMN "{table_name}"."{col.name}" IS \'{col.comment}\';'
+                statements.append(comment_sql)
+        
+        return statements
+    
+    def generate_sqlite_create_table(self, table_name: str, template_table: TableInfo) -> List[str]:
+        """生成SQLite CREATE TABLE语句"""
+        statements = []
+        
+        # 开始CREATE TABLE语句
+        create_sql = f'CREATE TABLE "{table_name}" (\n'
+        
+        # 添加列定义
+        column_definitions = []
+        for col in template_table.columns:
+            col_def = f'  "{col.name}" {col.data_type}'
+            
+            # 添加NULL约束
+            if not col.is_nullable:
+                col_def += " NOT NULL"
+            
+            # 添加默认值
+            if col.default_value:
+                col_def += f" DEFAULT '{col.default_value}'"
+            
+            # 添加主键约束
+            if col.column_key == 'PRI':
+                col_def += " PRIMARY KEY"
+            
+            column_definitions.append(col_def)
+        
+        create_sql += ",\n".join(column_definitions)
+        create_sql += "\n);"
+        
+        statements.append(create_sql)
+        
+        # 添加索引
+        for index in template_table.indexes:
+            if index['name'] != 'PRIMARY':
+                index_type = "UNIQUE" if index['unique'] else "INDEX"
+                index_columns = ", ".join([f'"{col}"' for col in index['columns']])
+                index_sql = f'CREATE {index_type} "{index["name"]}" ON "{table_name}" ({index_columns});'
+                statements.append(index_sql)
+        
+        return statements
+    
+    def generate_rename_table_statements(self, table_name: str, db_type: str) -> List[str]:
+        """生成重命名表语句"""
+        statements = []
+        new_name = f"{table_name}_del"
+        
+        if db_type == 'mysql':
+            statements.append(f"RENAME TABLE `{table_name}` TO `{new_name}`;")
+        elif db_type == 'postgresql':
+            statements.append(f'ALTER TABLE "{table_name}" RENAME TO "{new_name}";')
+        elif db_type == 'sqlite':
+            statements.append(f'ALTER TABLE "{table_name}" RENAME TO "{new_name}";')
+        
+        return statements
+    
     def compare_and_generate_sql(self) -> Dict[str, Any]:
         """比较数据库并生成SQL语句"""
         results = {}
@@ -637,9 +897,16 @@ class DatabaseSchemaComparator:
         template_connector.connect()
         
         try:
+            # 检查是否使用通配符对比所有表
+            tables_to_compare = self.tables_to_compare
+            if tables_to_compare == "*" or (isinstance(tables_to_compare, list) and len(tables_to_compare) == 1 and tables_to_compare[0] == "*"):
+                tables_to_compare = template_connector.get_all_tables()
+                logging.info(f"检测到通配符，将对比所有表，共 {len(tables_to_compare)} 个表")
+                logging.info(f"表列表: {', '.join(tables_to_compare)}")
+            
             # 获取模板表结构
             template_tables = {}
-            for table_name in self.tables_to_compare:
+            for table_name in tables_to_compare:
                 try:
                     template_tables[table_name] = template_connector.get_table_info(table_name)
                     logging.info(f"已获取模板表结构: {table_name}")
@@ -656,7 +923,64 @@ class DatabaseSchemaComparator:
                 target_connector.connect()
                 
                 try:
-                    for table_name in self.tables_to_compare:
+                    # 获取目标数据库的所有表
+                    target_tables = target_connector.get_all_tables()
+                    logging.info(f"目标数据库 {db_name} 共有 {len(target_tables)} 个表")
+                    
+                    # 检查表存在性
+                    missing_tables = []  # 模板库有但目标库没有的表
+                    extra_tables = []    # 目标库有但模板库没有的表
+                    common_tables = []   # 两个库都有的表
+                    
+                    for table_name in tables_to_compare:
+                        if table_name in target_tables:
+                            common_tables.append(table_name)
+                        else:
+                            missing_tables.append(table_name)
+                    
+                    for table_name in target_tables:
+                        if table_name not in tables_to_compare:
+                            extra_tables.append(table_name)
+                    
+                    logging.info(f"缺失表: {missing_tables}")
+                    logging.info(f"多余表: {extra_tables}")
+                    logging.info(f"共同表: {len(common_tables)} 个")
+                    
+                    # 处理缺失的表（生成CREATE TABLE语句）
+                    for table_name in missing_tables:
+                        if table_name in template_tables:
+                            template_table = template_tables[table_name]
+                            db_type = db_config['type'].lower()
+                            
+                            if db_type == 'mysql':
+                                create_statements = self.generate_mysql_create_table(table_name, template_table)
+                            elif db_type == 'postgresql':
+                                create_statements = self.generate_postgresql_create_table(table_name, template_table)
+                            elif db_type == 'sqlite':
+                                create_statements = self.generate_sqlite_create_table(table_name, template_table)
+                            else:
+                                create_statements = []
+                            
+                            results[db_name][table_name] = {
+                                'action': 'create_table',
+                                'create_statements': create_statements,
+                                'template_table': template_table
+                            }
+                            logging.info(f"生成表 {table_name} 的CREATE语句")
+                    
+                    # 处理多余的表（生成RENAME TABLE语句）
+                    for table_name in extra_tables:
+                        db_type = db_config['type'].lower()
+                        rename_statements = self.generate_rename_table_statements(table_name, db_type)
+                        
+                        results[db_name][table_name] = {
+                            'action': 'rename_table',
+                            'rename_statements': rename_statements
+                        }
+                        logging.info(f"生成表 {table_name} 的RENAME语句")
+                    
+                    # 处理共同存在的表（原有的列比较逻辑）
+                    for table_name in common_tables:
                         if table_name not in template_tables:
                             continue
                             
@@ -674,20 +998,21 @@ class DatabaseSchemaComparator:
                             db_type = db_config['type'].lower()
                             if db_type == 'mysql':
                                 alter_statements = self.generate_mysql_alter_statements(
-                                    table_name, column_differences
+                                    table_name, column_differences, template_table.columns, target_table.columns
                                 )
                             elif db_type == 'postgresql':
                                 alter_statements = self.generate_postgresql_alter_statements(
-                                    table_name, column_differences
+                                    table_name, column_differences, template_table.columns, target_table.columns
                                 )
                             elif db_type == 'sqlite':
                                 alter_statements = self.generate_sqlite_alter_statements(
-                                    table_name, column_differences
+                                    table_name, column_differences, template_table.columns, target_table.columns
                                 )
                             else:
                                 alter_statements = []
                             
                             results[db_name][table_name] = {
+                                'action': 'alter_table',
                                 'differences': column_differences,
                                 'alter_statements': alter_statements,
                                 'has_differences': bool(
@@ -705,6 +1030,7 @@ class DatabaseSchemaComparator:
                         except Exception as e:
                             logging.error(f"比较表 {table_name} 失败: {e}")
                             results[db_name][table_name] = {
+                                'action': 'error',
                                 'error': str(e)
                             }
                             
@@ -732,10 +1058,29 @@ class DatabaseSchemaComparator:
         for db_name, db_results in results.items():
             serializable_results[db_name] = {}
             for table_name, table_result in db_results.items():
-                if 'error' in table_result:
+                if table_result.get('action') == 'error':
                     serializable_results[db_name][table_name] = table_result
-                else:
+                elif table_result.get('action') == 'create_table':
                     serializable_results[db_name][table_name] = {
+                        'action': 'create_table',
+                        'create_statements': table_result['create_statements'],
+                        'template_table': {
+                            'name': table_result['template_table'].name,
+                            'columns': [asdict(col) for col in table_result['template_table'].columns],
+                            'primary_keys': table_result['template_table'].primary_keys,
+                            'indexes': table_result['template_table'].indexes,
+                            'foreign_keys': table_result['template_table'].foreign_keys,
+                            'comment': table_result['template_table'].comment
+                        }
+                    }
+                elif table_result.get('action') == 'rename_table':
+                    serializable_results[db_name][table_name] = {
+                        'action': 'rename_table',
+                        'rename_statements': table_result['rename_statements']
+                    }
+                elif table_result.get('action') == 'alter_table':
+                    serializable_results[db_name][table_name] = {
+                        'action': 'alter_table',
                         'has_differences': table_result['has_differences'],
                         'alter_statements': table_result['alter_statements'],
                         'differences': {
@@ -750,6 +1095,8 @@ class DatabaseSchemaComparator:
                             ]
                         }
                     }
+                else:
+                    serializable_results[db_name][table_name] = table_result
         
         with open(json_file, 'w', encoding='utf-8') as f:
             json.dump(serializable_results, f, ensure_ascii=False, indent=2)
@@ -758,25 +1105,72 @@ class DatabaseSchemaComparator:
         
         # 为每个数据库生成SQL文件
         for db_name, db_results in results.items():
-            sql_file = os.path.join(output_dir, f"alter_statements_{db_name}_{timestamp}.sql")
+            sql_file = os.path.join(output_dir, f"schema_statements_{db_name}_{timestamp}.sql")
             
             with open(sql_file, 'w', encoding='utf-8') as f:
-                f.write(f"-- 数据库 {db_name} 的表结构修改语句\n")
+                f.write(f"-- 数据库 {db_name} 的表结构同步语句\n")
                 f.write(f"-- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"-- 基于模板数据库: {self.template_db['database']}\n\n")
                 
+                # 分类处理不同类型的操作
+                create_tables = []
+                alter_tables = []
+                rename_tables = []
+                error_tables = []
+                
                 for table_name, table_result in db_results.items():
-                    if 'error' in table_result:
-                        f.write(f"-- 表 {table_name} 比较失败: {table_result['error']}\n\n")
-                        continue
-                    
-                    if table_result['has_differences']:
-                        f.write(f"-- 表 {table_name} 的修改语句\n")
-                        for stmt in table_result['alter_statements']:
+                    if table_result.get('action') == 'create_table':
+                        create_tables.append((table_name, table_result))
+                    elif table_result.get('action') == 'alter_table':
+                        alter_tables.append((table_name, table_result))
+                    elif table_result.get('action') == 'rename_table':
+                        rename_tables.append((table_name, table_result))
+                    elif table_result.get('action') == 'error':
+                        error_tables.append((table_name, table_result))
+                
+                # 1. 创建缺失的表
+                if create_tables:
+                    f.write("-- ============================================\n")
+                    f.write("-- 1. 创建缺失的表\n")
+                    f.write("-- ============================================\n\n")
+                    for table_name, table_result in create_tables:
+                        f.write(f"-- 创建表 {table_name}\n")
+                        for stmt in table_result['create_statements']:
                             f.write(f"{stmt}\n")
                         f.write("\n")
-                    else:
-                        f.write(f"-- 表 {table_name} 结构一致，无需修改\n\n")
+                
+                # 2. 修改现有表的结构
+                if alter_tables:
+                    f.write("-- ============================================\n")
+                    f.write("-- 2. 修改现有表的结构\n")
+                    f.write("-- ============================================\n\n")
+                    for table_name, table_result in alter_tables:
+                        if table_result.get('has_differences', False):
+                            f.write(f"-- 修改表 {table_name}\n")
+                            for stmt in table_result['alter_statements']:
+                                f.write(f"{stmt}\n")
+                            f.write("\n")
+                        else:
+                            f.write(f"-- 表 {table_name} 结构一致，无需修改\n\n")
+                
+                # 3. 重命名多余的表
+                if rename_tables:
+                    f.write("-- ============================================\n")
+                    f.write("-- 3. 重命名多余的表（添加_del后缀）\n")
+                    f.write("-- ============================================\n\n")
+                    for table_name, table_result in rename_tables:
+                        f.write(f"-- 重命名表 {table_name} -> {table_name}_del\n")
+                        for stmt in table_result['rename_statements']:
+                            f.write(f"{stmt}\n")
+                        f.write("\n")
+                
+                # 4. 错误信息
+                if error_tables:
+                    f.write("-- ============================================\n")
+                    f.write("-- 4. 处理失败的表\n")
+                    f.write("-- ============================================\n\n")
+                    for table_name, table_result in error_tables:
+                        f.write(f"-- 表 {table_name} 处理失败: {table_result['error']}\n\n")
             
             logging.info(f"数据库 {db_name} 的SQL语句已保存到: {sql_file}")
 
@@ -804,13 +1198,41 @@ def main():
         print("\n=== 比较结果摘要 ===")
         for db_name, db_results in results.items():
             print(f"\n数据库: {db_name}")
+            
+            # 统计各种操作
+            create_count = 0
+            alter_count = 0
+            rename_count = 0
+            error_count = 0
+            consistent_count = 0
+            
             for table_name, table_result in db_results.items():
-                if 'error' in table_result:
+                action = table_result.get('action', 'unknown')
+                if action == 'create_table':
+                    create_count += 1
+                    print(f"  表 {table_name}: 需要创建")
+                elif action == 'alter_table':
+                    if table_result.get('has_differences', False):
+                        alter_count += 1
+                        print(f"  表 {table_name}: 存在差异，需要修改")
+                    else:
+                        consistent_count += 1
+                        print(f"  表 {table_name}: 结构一致")
+                elif action == 'rename_table':
+                    rename_count += 1
+                    print(f"  表 {table_name}: 需要重命名为 {table_name}_del")
+                elif action == 'error':
+                    error_count += 1
                     print(f"  表 {table_name}: 错误 - {table_result['error']}")
-                elif table_result['has_differences']:
-                    print(f"  表 {table_name}: 存在差异，需要修改")
-                else:
-                    print(f"  表 {table_name}: 结构一致")
+            
+            # 输出统计信息
+            print(f"\n  统计信息:")
+            print(f"    需要创建的表: {create_count}")
+            print(f"    需要修改的表: {alter_count}")
+            print(f"    需要重命名的表: {rename_count}")
+            print(f"    结构一致的表: {consistent_count}")
+            if error_count > 0:
+                print(f"    处理失败的表: {error_count}")
         
         logging.info("数据库表结构比较完成！")
         

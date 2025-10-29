@@ -38,5 +38,6 @@
     "products",
     "orders",
     "order_items"
-  ]
+  ],
+  "_comment": "如果要对比所有表，将 tables_to_compare 设置为 '*' 或 ['*']"
 }

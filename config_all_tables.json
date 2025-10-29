@@ -1,0 +1,24 @@
+{
+  "template_database": {
+    "name": "template_db",
+    "type": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "user": "root",
+    "password": "password123",
+    "database": "ecommerce_template"
+  },
+  "target_databases": {
+    "production": {
+      "name": "production",
+      "type": "mysql",
+      "host": "prod-mysql.company.com",
+      "port": 3306,
+      "user": "prod_user",
+      "password": "prod_secure_password",
+      "database": "ecommerce_prod"
+    }
+  },
+  "tables_to_compare": "*"
+}
+

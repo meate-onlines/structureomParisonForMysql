@@ -10,6 +10,9 @@
 - 📝 **详细报告**: 生成JSON格式的详细比较报告
 - 🚀 **批量处理**: 支持同时比较多个表和多个数据库
 - 📋 **日志记录**: 完整的操作日志记录
+- 🆕 **表存在性检查**: 自动检测缺失和多余的表
+- 🏗️ **建表语句生成**: 为缺失的表生成完整的CREATE TABLE语句
+- 🔄 **表重命名**: 为多余的表生成重命名语句（添加_del后缀）
 
 ## 支持的数据库类型
 
@@ -23,14 +26,23 @@
 
 ### 方法一：使用安装脚本（推荐）
 
+**Linux/macOS:**
 ```bash
 # 克隆或下载项目文件
 # 运行安装脚本
 ./install.sh
 ```
 
+**Windows:**
+```cmd
+# 克隆或下载项目文件
+# 运行安装脚本
+install.bat
+```
+
 ### 方法二：手动安装
 
+**Linux/macOS:**
 ```bash
 # 创建虚拟环境
 python3 -m venv venv
@@ -38,6 +50,18 @@ source venv/bin/activate
 
 # 安装依赖
 pip install -r requirements.txt
+```
+
+**Windows:**
+```cmd
+# 创建虚拟环境
+python -m venv venv
+venv\Scripts\activate.bat
+
+# 安装依赖（如果requirements.txt安装失败，请分步安装）
+pip install mysql-connector-python==8.2.0
+pip install psycopg2-binary --only-binary=all
+pip install typing-extensions==4.8.0
 ```
 
 ## 配置文件
@@ -93,7 +117,7 @@ cp config_template.json my_config.json
 
 - **template_database**: 作为标准的模板数据库配置
 - **target_databases**: 需要与模板比较的目标数据库列表
-- **tables_to_compare**: 需要比较的表名列表
+- **tables_to_compare**: 需要比较的表名列表，支持通配符 `"*"` 来比较所有表
 
 ## 使用方法
 
@@ -146,6 +170,7 @@ python database_schema_comparator.py config.json -o /path/to/output
 - ✅ 字符长度限制
 - ✅ 数值精度和小数位数
 - ✅ 列注释
+- ✅ **字段位置**（新增：新增字段会按照模板库的位置顺序添加）
 
 ### 约束和索引
 - ✅ 主键
@@ -160,11 +185,23 @@ python database_schema_comparator.py config.json -o /path/to/output
 
 ### MySQL
 ```sql
--- 添加列
-ALTER TABLE `table_name` ADD COLUMN `new_column` VARCHAR(255) NOT NULL DEFAULT 'default_value' COMMENT '列注释';
+-- 创建表
+CREATE TABLE `table_name` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) NOT NULL COMMENT '名称',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='表注释';
+
+-- 添加列（支持AFTER子句指定位置）
+ALTER TABLE `table_name` ADD COLUMN `new_column` VARCHAR(255) NOT NULL DEFAULT 'default_value' COMMENT '列注释' AFTER `existing_column`;
 
 -- 修改列
 ALTER TABLE `table_name` MODIFY COLUMN `column_name` INT(11) NOT NULL DEFAULT 0;
+
+-- 重命名表
+RENAME TABLE `old_table` TO `old_table_del`;
 
 -- 删除列（注释形式，需手动确认）
 -- ALTER TABLE `table_name` DROP COLUMN `old_column`; -- 谨慎删除
@@ -172,6 +209,13 @@ ALTER TABLE `table_name` MODIFY COLUMN `column_name` INT(11) NOT NULL DEFAULT 0;
 
 ### PostgreSQL
 ```sql
+-- 创建表
+CREATE TABLE "table_name" (
+  "id" SERIAL PRIMARY KEY,
+  "name" VARCHAR(100) NOT NULL,
+  "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 添加列
 ALTER TABLE "table_name" ADD COLUMN "new_column" VARCHAR(255) DEFAULT 'default_value' NOT NULL;
 COMMENT ON COLUMN "table_name"."new_column" IS '列注释';
@@ -181,12 +225,25 @@ ALTER TABLE "table_name" ALTER COLUMN "column_name" TYPE INTEGER;
 
 -- 修改NULL约束
 ALTER TABLE "table_name" ALTER COLUMN "column_name" SET NOT NULL;
+
+-- 重命名表
+ALTER TABLE "old_table" RENAME TO "old_table_del";
 ```
 
 ### SQLite
 ```sql
+-- 创建表
+CREATE TABLE "table_name" (
+  "id" INTEGER PRIMARY KEY,
+  "name" TEXT NOT NULL,
+  "created_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 添加列（SQLite限制较多）
 ALTER TABLE "table_name" ADD COLUMN "new_column" TEXT DEFAULT 'default_value';
+
+-- 重命名表
+ALTER TABLE "old_table" RENAME TO "old_table_del";
 
 -- 注意：SQLite不支持直接修改或删除列，需要重建表
 ```
@@ -225,6 +282,58 @@ ls output/
 }
 ```
 
+### 示例4：表存在性检查
+
+工具会自动检测表的存在性并生成相应的SQL语句：
+
+```bash
+# 运行比较
+python database_schema_comparator.py config.json
+
+# 输出示例：
+# === 比较结果摘要 ===
+# 
+# 数据库: production
+#   表 new_table: 需要创建
+#   表 old_table: 需要重命名为 old_table_del
+#   表 users: 存在差异，需要修改
+#   表 products: 结构一致
+# 
+#   统计信息:
+#     需要创建的表: 1
+#     需要修改的表: 1
+#     需要重命名的表: 1
+#     结构一致的表: 1
+```
+
+生成的SQL文件会按操作类型分类：
+```sql
+-- ============================================
+-- 1. 创建缺失的表
+-- ============================================
+
+-- 创建表 new_table
+CREATE TABLE `new_table` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `name` varchar(100) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================
+-- 2. 修改现有表的结构
+-- ============================================
+
+-- 修改表 users
+ALTER TABLE `users` ADD COLUMN `email` VARCHAR(255) NOT NULL AFTER `username`;
+
+-- ============================================
+-- 3. 重命名多余的表（添加_del后缀）
+-- ============================================
+
+-- 重命名表 old_table -> old_table_del
+RENAME TABLE `old_table` TO `old_table_del`;
+```
+
 ## 安全注意事项
 
 ⚠️ **重要提醒**：
@@ -237,6 +346,23 @@ ls output/
 ## 故障排除
 
 ### 常见问题
+
+**Q: Windows上安装psycopg2-binary失败**
+```
+A: 解决方案：
+   - 使用预编译版本: pip install psycopg2-binary --only-binary=all
+   - 或者分步安装: pip install mysql-connector-python==8.2.0
+   - 然后: pip install psycopg2-binary --only-binary=all
+   - 最后: pip install typing-extensions==4.8.0
+```
+
+**Q: PowerShell中运行脚本报错**
+```
+A: PowerShell执行策略问题，解决方法：
+   - 临时允许: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+   - 或者使用cmd运行: cmd /c install.bat
+   - 或者手动激活虚拟环境: venv\Scripts\activate.bat
+```
 
 **Q: 连接数据库失败**
 ```
@@ -294,6 +420,21 @@ tail -f schema_comparison.log
 为新的数据库类型添加对应的`generate_*_alter_statements()`方法。
 
 ## 版本历史
+
+- **v1.2.0** (2025-10-29)
+  - **新增表存在性检查**：自动检测模板库和目标库中表的差异
+  - **新增建表语句生成**：为缺失的表生成完整的CREATE TABLE语句
+  - **新增表重命名功能**：为多余的表生成重命名语句（添加_del后缀）
+  - **改进SQL文件结构**：按操作类型分类生成SQL语句
+  - **增强摘要报告**：显示各种操作的统计信息
+
+- **v1.1.0** (2025-10-29)
+  - 新增通配符支持：`tables_to_compare` 设置为 `"*"` 时可比较所有表
+  - **新增字段位置支持**：新增字段会按照模板库的位置顺序添加，MySQL支持AFTER子句
+  - 修复Windows系统安装问题
+  - 添加Windows安装脚本 `install.bat`
+  - 改进PostgreSQL连接器安装方式
+  - 完善故障排除文档
 
 - **v1.0.0** (2023-12-01)
   - 初始版本
