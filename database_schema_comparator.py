@@ -15,6 +15,7 @@ from datetime import datetime
 import mysql.connector
 import psycopg2
 import sqlite3
+from sshtunnel import SSHTunnelForwarder
 
 
 @dataclass
@@ -50,15 +51,73 @@ class DatabaseConnector:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.connection = None
+        self.ssh_tunnel = None
+        
+    def _setup_ssh_tunnel(self) -> Optional[int]:
+        """设置SSH隧道，返回本地端口号"""
+        ssh_config = self.config.get('ssh_tunnel')
+        if not ssh_config or not ssh_config.get('enabled', False):
+            return None
+        
+        try:
+            # 获取SSH配置
+            ssh_host = ssh_config.get('ssh_host')
+            ssh_port = ssh_config.get('ssh_port', 22)
+            ssh_user = ssh_config.get('ssh_user')
+            ssh_password = ssh_config.get('ssh_password')
+            ssh_private_key_path = ssh_config.get('ssh_private_key_path', '').strip()
+            
+            if not ssh_host or not ssh_user:
+                raise ValueError("SSH配置不完整：需要提供ssh_host和ssh_user")
+            
+            # 获取数据库目标地址和端口
+            remote_host = self.config.get('host', 'localhost')
+            remote_port = self.config.get('port', 3306)
+            
+            # 创建SSH隧道
+            tunnel_kwargs = {
+                'ssh_address_or_host': (ssh_host, ssh_port),
+                'ssh_username': ssh_user,
+                'remote_bind_address': (remote_host, remote_port),
+                'local_bind_address': ('127.0.0.1', 0)  # 0表示自动分配端口
+            }
+            
+            # 使用密码或私钥认证
+            if ssh_password:
+                tunnel_kwargs['ssh_password'] = ssh_password
+            elif ssh_private_key_path:
+                import os
+                if not os.path.exists(ssh_private_key_path):
+                    raise FileNotFoundError(f"SSH私钥文件不存在: {ssh_private_key_path}")
+                tunnel_kwargs['ssh_pkey'] = ssh_private_key_path
+            else:
+                raise ValueError("SSH认证方式不完整：需要提供ssh_password或ssh_private_key_path")
+            
+            self.ssh_tunnel = SSHTunnelForwarder(**tunnel_kwargs)
+            self.ssh_tunnel.start()
+            
+            local_port = self.ssh_tunnel.local_bind_port
+            logging.info(f"SSH隧道已建立: {ssh_host}:{ssh_port} -> {remote_host}:{remote_port} (本地端口: {local_port})")
+            return local_port
+            
+        except Exception as e:
+            logging.error(f"建立SSH隧道失败: {e}")
+            raise
         
     def connect(self):
         """连接数据库"""
         raise NotImplementedError
         
     def disconnect(self):
-        """断开数据库连接"""
+        """断开数据库连接和SSH隧道"""
         if self.connection:
             self.connection.close()
+            self.connection = None
+        
+        if self.ssh_tunnel:
+            self.ssh_tunnel.stop()
+            self.ssh_tunnel = None
+            logging.info("SSH隧道已关闭")
             
     def get_table_info(self, table_name: str) -> TableInfo:
         """获取表结构信息"""
@@ -83,9 +142,20 @@ class MySQLConnector(DatabaseConnector):
     def connect(self):
         """连接MySQL数据库"""
         try:
+            # 设置SSH隧道（如果启用）
+            local_port = self._setup_ssh_tunnel()
+            
+            # 如果使用SSH隧道，连接到本地端口
+            if local_port:
+                host = '127.0.0.1'
+                port = local_port
+            else:
+                host = self.config['host']
+                port = self.config.get('port', 3306)
+            
             self.connection = mysql.connector.connect(
-                host=self.config['host'],
-                port=self.config.get('port', 3306),
+                host=host,
+                port=port,
                 user=self.config['user'],
                 password=self.config['password'],
                 database=self.config['database']
@@ -237,9 +307,20 @@ class PostgreSQLConnector(DatabaseConnector):
     def connect(self):
         """连接PostgreSQL数据库"""
         try:
+            # 设置SSH隧道（如果启用）
+            local_port = self._setup_ssh_tunnel()
+            
+            # 如果使用SSH隧道，连接到本地端口
+            if local_port:
+                host = '127.0.0.1'
+                port = local_port
+            else:
+                host = self.config['host']
+                port = self.config.get('port', 5432)
+            
             self.connection = psycopg2.connect(
-                host=self.config['host'],
-                port=self.config.get('port', 5432),
+                host=host,
+                port=port,
                 user=self.config['user'],
                 password=self.config['password'],
                 database=self.config['database']
@@ -595,8 +676,36 @@ class DatabaseSchemaComparator:
         # 添加缺失的列，按位置顺序
         for col in differences['missing_columns']:
             null_clause = "NOT NULL" if not col.is_nullable else "NULL"
-            default_clause = f"DEFAULT '{col.default_value}'" if col.default_value else ""
+            
+            # 处理默认值
+            default_clause = ""
+            if col.default_value is not None:
+                default_val = str(col.default_value)
+                if default_val.upper() == 'CURRENT_TIMESTAMP':
+                    default_clause = f"DEFAULT CURRENT_TIMESTAMP"
+                elif col.data_type.lower().startswith('bit'):
+                    if default_val.startswith("b'") or default_val.startswith("B'"):
+                         default_clause = f"DEFAULT {default_val}"
+                    elif default_val.isdigit():
+                         default_clause = f"DEFAULT b'{default_val}'"
+                    else:
+                         default_clause = f"DEFAULT {default_val}"
+                else:
+                    default_clause = f"DEFAULT '{default_val}'"
+            
             length_clause = f"({col.character_maximum_length})" if col.character_maximum_length else ""
+            
+            # 特殊字段处理：creator 字符集
+            charset_clause = ""
+            if col.name == 'creator' and 'varchar' in col.data_type.lower():
+                charset_clause = "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            
+            # 特殊字段处理：update_time
+            extra_clause = ""
+            if col.name == 'update_time' and ('datetime' in col.data_type.lower() or 'timestamp' in col.data_type.lower()):
+                 if not col.extra or 'on update' not in col.extra.lower():
+                      extra_clause = "ON UPDATE CURRENT_TIMESTAMP"
+            
             comment_clause = f"COMMENT '{col.comment}'" if col.comment else ""
             
             # 找到应该插入的位置（在哪个字段之后）
@@ -608,19 +717,51 @@ class DatabaseSchemaComparator:
                 if template_col.ordinal_position < current_pos and template_col.name in target_col_names:
                     after_clause = f"AFTER `{template_col.name}`"
             
-            stmt = f"ALTER TABLE `{table_name}` ADD COLUMN `{col.name}` {col.data_type}{length_clause} {null_clause} {default_clause} {comment_clause} {after_clause};"
-            statements.append(stmt.strip())
+            stmt = f"ALTER TABLE `{table_name}` ADD COLUMN `{col.name}` {col.data_type}{length_clause} {charset_clause} {null_clause} {default_clause} {extra_clause} {comment_clause} {after_clause};"
+            # 清理多余空格
+            stmt = " ".join(stmt.split())
+            statements.append(stmt)
         
         # 修改列
         for mod_col in differences['modified_columns']:
             col = mod_col['template']
             null_clause = "NOT NULL" if not col.is_nullable else "NULL"
-            default_clause = f"DEFAULT '{col.default_value}'" if col.default_value else ""
+            
+            # 处理默认值
+            default_clause = ""
+            if col.default_value is not None:
+                default_val = str(col.default_value)
+                if default_val.upper() == 'CURRENT_TIMESTAMP':
+                    default_clause = f"DEFAULT CURRENT_TIMESTAMP"
+                elif col.data_type.lower().startswith('bit'):
+                    if default_val.startswith("b'") or default_val.startswith("B'"):
+                         default_clause = f"DEFAULT {default_val}"
+                    elif default_val.isdigit():
+                         default_clause = f"DEFAULT b'{default_val}'"
+                    else:
+                         default_clause = f"DEFAULT {default_val}"
+                else:
+                    default_clause = f"DEFAULT '{default_val}'"
+
             length_clause = f"({col.character_maximum_length})" if col.character_maximum_length else ""
+            
+            # 特殊字段处理：creator 字符集
+            charset_clause = ""
+            if col.name == 'creator' and 'varchar' in col.data_type.lower():
+                charset_clause = "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            
+            # 特殊字段处理：update_time
+            extra_clause = ""
+            if col.name == 'update_time' and ('datetime' in col.data_type.lower() or 'timestamp' in col.data_type.lower()):
+                 if not col.extra or 'on update' not in col.extra.lower():
+                      extra_clause = "ON UPDATE CURRENT_TIMESTAMP"
+
             comment_clause = f"COMMENT '{col.comment}'" if col.comment else ""
             
-            stmt = f"ALTER TABLE `{table_name}` MODIFY COLUMN `{col.name}` {col.data_type}{length_clause} {null_clause} {default_clause} {comment_clause};"
-            statements.append(stmt.strip())
+            stmt = f"ALTER TABLE `{table_name}` MODIFY COLUMN `{col.name}` {col.data_type}{length_clause} {charset_clause} {null_clause} {default_clause} {extra_clause} {comment_clause};"
+            # 清理多余空格
+            stmt = " ".join(stmt.split())
+            statements.append(stmt)
         
         # 删除多余的列（可选，需要谨慎）
         for col in differences['extra_columns']:
@@ -718,14 +859,34 @@ class DatabaseSchemaComparator:
             elif col.numeric_precision:
                 col_def += f"({col.numeric_precision})"
             
+            # 特殊字段处理：creator 字符集
+            if col.name == 'creator' and 'varchar' in col.data_type.lower():
+                col_def += " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+
             # 添加NULL约束
             if not col.is_nullable:
                 col_def += " NOT NULL"
             
             # 添加默认值
-            if col.default_value:
-                col_def += f" DEFAULT '{col.default_value}'"
+            if col.default_value is not None:
+                default_val = str(col.default_value)
+                if default_val.upper() == 'CURRENT_TIMESTAMP':
+                    col_def += f" DEFAULT CURRENT_TIMESTAMP"
+                elif col.data_type.lower().startswith('bit'):
+                    if default_val.startswith("b'") or default_val.startswith("B'"):
+                         col_def += f" DEFAULT {default_val}"
+                    elif default_val.isdigit():
+                         col_def += f" DEFAULT b'{default_val}'"
+                    else:
+                         col_def += f" DEFAULT {default_val}"
+                else:
+                    col_def += f" DEFAULT '{default_val}'"
             
+            # 特殊字段处理：update_time
+            if col.name == 'update_time' and ('datetime' in col.data_type.lower() or 'timestamp' in col.data_type.lower()):
+                if not col.extra or 'on update' not in col.extra.lower():
+                    col_def += " ON UPDATE CURRENT_TIMESTAMP"
+
             # 添加AUTO_INCREMENT
             if col.extra and 'auto_increment' in col.extra.lower():
                 col_def += " AUTO_INCREMENT"

@@ -4,13 +4,14 @@
 mysql-connector-python==8.2.0
 
 # PostgreSQL数据库连接器
-# 在Windows上如果psycopg2-binary安装失败，可以尝试：
-# pip install psycopg2-binary --only-binary=all
-# 或者使用预编译版本：
-psycopg2-binary==2.9.9; sys_platform != "win32"
-psycopg2==2.9.9; sys_platform == "win32"
+# 在Windows上使用预编译的psycopg2-binary，在Linux/Mac上可以使用psycopg2
+psycopg2-binary>=2.9.9; sys_platform == "win32"
+psycopg2>=2.9.9; sys_platform != "win32"
 
 # SQLite是Python内置模块，无需额外安装
+
+# SSH隧道支持
+sshtunnel>=0.4.0
 
 # 其他可能用到的包
 typing-extensions==4.8.0

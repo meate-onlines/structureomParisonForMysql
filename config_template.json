@@ -16,16 +16,15 @@
       "port": 3306,
       "user": "prod_user",
       "password": "prod_password",
-      "database": "production_database_name"
-    },
-    "staging_db": {
-      "name": "staging_db",
-      "type": "postgresql",
-      "host": "staging-server.example.com",
-      "port": 5432,
-      "user": "staging_user",
-      "password": "staging_password",
-      "database": "staging_database_name"
+      "database": "production_database_name",
+      "ssh_tunnel": {
+        "enabled": false,
+        "ssh_host": "ssh-server.example.com",
+        "ssh_port": 22,
+        "ssh_user": "ssh_username",
+        "ssh_password": "ssh_password",
+        "ssh_private_key_path": ""
+      }
     },
     "test_db": {
       "name": "test_db",
@@ -39,5 +38,15 @@
     "orders",
     "order_items"
   ],
-  "_comment": "如果要对比所有表，将 tables_to_compare 设置为 '*' 或 ['*']"
+  "_comment": "如果要对比所有表，将 tables_to_compare 设置为 '*' 或 ['*']",
+  "_ssh_tunnel_comment": "SSH隧道配置说明：",
+  "_ssh_tunnel_note": [
+    "1. enabled: 是否启用SSH隧道（true/false）",
+    "2. ssh_host: SSH跳板机地址",
+    "3. ssh_port: SSH端口（默认22）",
+    "4. ssh_user: SSH用户名",
+    "5. ssh_password: SSH密码（与ssh_private_key_path二选一）",
+    "6. ssh_private_key_path: SSH私钥文件路径（与ssh_password二选一）",
+    "7. 如果不需要SSH隧道，可以省略ssh_tunnel配置或设置enabled为false"
+  ]
 }

@@ -13,6 +13,8 @@
 - 🆕 **表存在性检查**: 自动检测缺失和多余的表
 - 🏗️ **建表语句生成**: 为缺失的表生成完整的CREATE TABLE语句
 - 🔄 **表重命名**: 为多余的表生成重命名语句（添加_del后缀）
+- 🔐 **SSH隧道支持**: 支持通过SSH隧道安全连接数据库
+- 🖥️ **图形配置界面**: Windows图形界面配置工具，方便管理数据库配置
 
 ## 支持的数据库类型
 
@@ -66,6 +68,27 @@ pip install typing-extensions==4.8.0
 
 ## 配置文件
 
+### 方法一：使用图形界面配置（推荐，Windows用户）
+
+**Windows用户可以使用图形界面配置工具：**
+
+```cmd
+# 双击运行
+start_config_gui.bat
+
+# 或手动运行
+python config_gui.py
+```
+
+图形界面功能：
+- ✅ 可视化添加/编辑/删除目标数据库配置
+- ✅ 支持SSH隧道配置（密码或私钥认证）
+- ✅ 一键测试数据库连接
+- ✅ 自动保存配置到JSON文件
+- ✅ 支持加载和保存配置文件
+
+### 方法二：手动编辑配置文件
+
 复制配置模板并修改：
 
 ```bash
@@ -93,7 +116,15 @@ cp config_template.json my_config.json
       "port": 3306,
       "user": "prod_user",
       "password": "prod_password",
-      "database": "production_database_name"
+      "database": "production_database_name",
+      "ssh_tunnel": {
+        "enabled": true,
+        "ssh_host": "jump-server.example.com",
+        "ssh_port": 22,
+        "ssh_user": "jump_user",
+        "ssh_password": "ssh_password",
+        "ssh_private_key_path": ""
+      }
     },
     "staging_db": {
       "name": "staging_db",
@@ -119,13 +150,59 @@ cp config_template.json my_config.json
 - **target_databases**: 需要与模板比较的目标数据库列表
 - **tables_to_compare**: 需要比较的表名列表，支持通配符 `"*"` 来比较所有表
 
+### SSH隧道配置（可选）
+
+为了数据库安全，可以通过SSH隧道连接数据库。在`target_databases`的每个数据库配置中添加`ssh_tunnel`字段：
+
+```json
+"ssh_tunnel": {
+  "enabled": true,                    // 是否启用SSH隧道
+  "ssh_host": "jump-server.com",      // SSH跳板机地址
+  "ssh_port": 22,                     // SSH端口（默认22）
+  "ssh_user": "username",             // SSH用户名
+  "ssh_password": "password",          // SSH密码（与ssh_private_key_path二选一）
+  "ssh_private_key_path": ""          // SSH私钥文件路径（与ssh_password二选一）
+}
+```
+
+**注意事项：**
+- `ssh_password` 和 `ssh_private_key_path` 二选一即可
+- 如果使用私钥，请确保私钥文件路径正确且有读取权限
+- 如果不需要SSH隧道，可以省略`ssh_tunnel`配置或设置`enabled`为`false`
+
 ## 使用方法
 
-### 基本用法
+### 步骤1：配置数据库连接
+
+**Windows用户（推荐使用图形界面）：**
+```cmd
+# 运行配置工具
+start_config_gui.bat
+```
+
+在图形界面中：
+1. 点击"添加"按钮添加新的目标数据库
+2. 填写数据库连接信息
+3. 如需SSH隧道，勾选"启用SSH隧道"并填写SSH配置
+4. 点击"测试连接"验证配置
+5. 点击"保存配置"保存到文件
+
+**Linux/macOS用户（手动编辑）：**
+```bash
+# 复制模板
+cp config_template.json my_config.json
+
+# 编辑配置文件
+vim my_config.json
+```
+
+### 步骤2：运行比较
 
 ```bash
 # 激活虚拟环境
-source venv/bin/activate
+source venv/bin/activate  # Linux/macOS
+# 或
+venv\Scripts\activate.bat  # Windows
 
 # 运行比较
 python database_schema_comparator.py config.json
@@ -372,6 +449,26 @@ A: 检查以下项目：
    - 用户名和密码是否正确
    - 端口号是否正确
    - 防火墙设置
+   - SSH隧道配置是否正确（如果使用SSH隧道）
+```
+
+**Q: SSH隧道连接失败**
+```
+A: 检查以下项目：
+   - SSH跳板机地址和端口是否正确
+   - SSH用户名和密码/私钥是否正确
+   - 私钥文件路径是否存在且有读取权限
+   - 网络是否能访问SSH跳板机
+   - SSH服务是否正常运行
+```
+
+**Q: GUI配置工具无法启动**
+```
+A: 检查以下项目：
+   - Python是否已正确安装
+   - 是否已安装所有依赖（pip install -r requirements.txt）
+   - 虚拟环境是否已激活
+   - Windows用户可能需要安装tkinter（通常Python自带）
 ```
 
 **Q: 表不存在错误**
@@ -420,6 +517,12 @@ tail -f schema_comparison.log
 为新的数据库类型添加对应的`generate_*_alter_statements()`方法。
 
 ## 版本历史
+
+- **v1.3.0** (2025-01-XX)
+  - **新增SSH隧道支持**：支持通过SSH隧道安全连接数据库
+  - **新增图形配置界面**：Windows图形界面配置工具，方便管理数据库配置
+  - **改进连接安全性**：支持SSH密码和私钥两种认证方式
+  - **增强用户体验**：图形界面支持一键测试连接、文件选择等功能
 
 - **v1.2.0** (2025-10-29)
   - **新增表存在性检查**：自动检测模板库和目标库中表的差异
